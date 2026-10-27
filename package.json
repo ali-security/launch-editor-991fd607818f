@@ -4,7 +4,8 @@
   "scripts": {
     "version-all": "pnpm -r exec npm version",
     "publish-all": "pnpm -r publish",
-    "lint": "eslint packages --fix"
+    "lint": "eslint packages --fix",
+    "test": "node --test"
   },
   "devDependencies": {
     "@eslint/js": "^9.5.0",
