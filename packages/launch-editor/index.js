@@ -71,16 +71,24 @@ function launchEditor (file, specifiedEditor, onErrorCallback) {
   let { fileName } = parsed
   const { lineNumber, columnNumber } = parsed
 
-  if (!fs.existsSync(fileName)) {
-    return
-  }
-
   if (typeof specifiedEditor === 'function') {
     onErrorCallback = specifiedEditor
     specifiedEditor = undefined
   }
 
   onErrorCallback = wrapErrorCallback(onErrorCallback)
+
+  if (process.platform === 'win32' && path.resolve(fileName).startsWith('\\\\')) {
+    return onErrorCallback(
+      fileName,
+      'UNC paths are not supported on Windows to avoid security issues. ' +
+        'See https://github.com/vitejs/launch-editor/tree/main/packages/launch-editor#unc-paths-on-windows for details.'
+    )
+  }
+
+  if (!fs.existsSync(fileName)) {
+    return
+  }
 
   const [editor, ...args] = guessEditor(specifiedEditor)
   if (!editor) {
