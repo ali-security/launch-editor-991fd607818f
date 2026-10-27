@@ -271,3 +271,76 @@ describe('launchEditor WSL handling', () => {
     ])
   })
 })
+
+describe('launchEditor existence check', () => {
+  // A position suffix can turn the last path component into `..` once it is stripped,
+  // e.g. `<project>\& calc.exe\..:1:1`. Windows normalizes `..` lexically, so checking the
+  // unresolved file name lets a component that does not exist on disk pass the check.
+  const project = path.resolve('project')
+  const file = `${project}${path.sep}attacker-controlled${path.sep}..:1:1`
+
+  test('checks the existence of the resolved file name', (t) => {
+    const existsSync = t.mock.method(fs, 'existsSync', () => false)
+    const onError = mock.fn()
+
+    launchEditor(file, 'code', onError)
+
+    assert.equal(existsSync.mock.callCount(), 1)
+    assert.equal(existsSync.mock.calls[0].arguments[0], project)
+    assert.equal(onError.mock.callCount(), 0)
+  })
+
+  test('hands the resolved file name to the editor and the error callback', (t) => {
+    t.mock.method(fs, 'existsSync', () => true)
+    // Records the listeners, so that the editor can be made to exit with an error and the
+    // file name reported to the error callback can be checked.
+    const listeners = {}
+    const editorProcess = {
+      on (event, listener) {
+        listeners[event] = listener
+      },
+      kill () {}
+    }
+    const launch = t.mock.method(
+      childProcess,
+      process.platform === 'win32' ? 'exec' : 'spawn',
+      () => editorProcess
+    )
+    const onError = mock.fn()
+
+    launchEditor(file, 'code', onError)
+    listeners.exit(1)
+
+    assert.equal(launch.mock.callCount(), 1)
+    const launched = JSON.stringify(launch.mock.calls[0].arguments.slice(0, 2))
+    assert.ok(!launched.includes('attacker-controlled'), `unsafe editor launch: ${launched}`)
+    if (process.platform !== 'win32') {
+      assert.deepEqual(launch.mock.calls[0].arguments[1], ['-r', '-g', `${project}:1:1`])
+    }
+    assert.equal(onError.mock.callCount(), 1)
+    assert.equal(onError.mock.calls[0].arguments[0], project)
+  })
+
+  if (process.platform === 'win32') {
+    test('does not let a shell payload hidden behind `..` pass the existence check', (t) => {
+      // Mirrors how Windows answers `fs.existsSync()`: `..` is collapsed before the lookup,
+      // so only `C:\project` has to exist for the unresolved name to be reported as present.
+      const existsSync = t.mock.method(
+        fs,
+        'existsSync',
+        (p) => path.win32.resolve(p) === 'C:\\project'
+      )
+      const exec = t.mock.method(childProcess, 'exec', () => fakeEditorProcess)
+      const onError = mock.fn()
+
+      launchEditor('C:\\project\\& calc.exe & rem \\..:1:1', 'code', onError)
+
+      assert.equal(existsSync.mock.callCount(), 1)
+      assert.equal(existsSync.mock.calls[0].arguments[0], 'C:\\project')
+      assert.equal(onError.mock.callCount(), 0)
+      assert.equal(exec.mock.callCount(), 1)
+      const command = exec.mock.calls[0].arguments[0]
+      assert.ok(!command.includes('calc.exe'), `unsafe editor command: ${command}`)
+    })
+  }
+})
