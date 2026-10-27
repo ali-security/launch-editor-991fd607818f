@@ -1,10 +1,16 @@
 const assert = require('node:assert/strict')
+const childProcess = require('node:child_process')
 const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
 const { describe, test, mock } = require('node:test')
 
 const launchEditor = require('./index.js')
 
 const UNC_ERROR = 'UNC paths are not supported on Windows to avoid security issues.'
+
+// Stands in for the editor process, so that the tests never start a real editor.
+const fakeEditorProcess = { on () {}, kill () {} }
 
 describe('launchEditor UNC path guard', () => {
   if (process.platform === 'win32') {
@@ -124,4 +130,144 @@ describe('launchEditor CMD argument guard', () => {
       assert.match(onError.mock.calls[0].arguments[1], /argument containing "%"/)
     })
   }
+})
+
+describe('launchEditor file names that look like editor options', () => {
+  if (process.platform === 'win32') {
+    // On Windows the editor is started through `childProcess.exec`, so the
+    // file argument is checked within the launch command.
+    const cases = [
+      ['notepad++', '-multiInst'],
+      ['vim', '+qa!'],
+      ['code', '--new-window']
+    ]
+
+    for (const [editor, fileName] of cases) {
+      for (const position of ['', ':10:5']) {
+        test(`${editor} gets an absolute path for an option-like file name ${position ? 'with' : 'without'} a position`, (t) => {
+          t.mock.method(fs, 'existsSync', () => true)
+          const exec = t.mock.method(childProcess, 'exec', () => fakeEditorProcess)
+
+          launchEditor(fileName + position, editor)
+
+          assert.equal(exec.mock.callCount(), 1)
+          const command = exec.mock.calls[0].arguments[0]
+          assert.ok(command.includes(path.resolve(fileName)), `unsafe editor command: ${command}`)
+          assert.ok(!command.split(' ').includes(fileName + position), `unsafe editor command: ${command}`)
+        })
+      }
+    }
+  } else {
+    test('resolves a relative file name to an absolute path', (t) => {
+      t.mock.method(fs, 'existsSync', () => true)
+      const spawn = t.mock.method(childProcess, 'spawn', () => fakeEditorProcess)
+
+      launchEditor('file', 'vim')
+
+      assert.equal(spawn.mock.callCount(), 1)
+      assert.deepEqual(spawn.mock.calls[0].arguments[1], [path.resolve('file')])
+    })
+
+    test('keeps the position arguments in front of the absolute file name', (t) => {
+      t.mock.method(fs, 'existsSync', () => true)
+      const spawn = t.mock.method(childProcess, 'spawn', () => fakeEditorProcess)
+
+      launchEditor('file:10:5', 'vim')
+
+      assert.equal(spawn.mock.callCount(), 1)
+      assert.deepEqual(spawn.mock.calls[0].arguments[1], [
+        '+call cursor(10, 5)',
+        path.resolve('file')
+      ])
+    })
+
+    const cases = [
+      ['vim', '+call writefile(["marker"], "LAUNCH_EDITOR_MARKER")|qa!'],
+      ['mvim', '-ccall writefile(["marker"], "LAUNCH_EDITOR_MARKER")|qa!'],
+      ['gvim', '+call writefile(["marker"], "LAUNCH_EDITOR_MARKER")|qa!'],
+      ['emacs', '--eval=(write-region "marker" nil "LAUNCH_EDITOR_MARKER")'],
+      ['emacsclient', '-eatouch LAUNCH_EDITOR_MARKER'],
+      ['notepad++', '-pluginMessage=LAUNCH_EDITOR_MARKER'],
+      ['code', '--install-extension=LAUNCH_EDITOR_MARKER']
+    ]
+
+    for (const [editor, fileName] of cases) {
+      for (const position of ['', ':10:5']) {
+        test(`${editor} gets an absolute path for an option-like file name ${position ? 'with' : 'without'} a position`, (t) => {
+          t.mock.method(fs, 'existsSync', () => true)
+          const spawn = t.mock.method(childProcess, 'spawn', () => fakeEditorProcess)
+
+          launchEditor(fileName + position, editor)
+
+          assert.equal(spawn.mock.callCount(), 1)
+          const args = spawn.mock.calls[0].arguments[1]
+          const fileArgument = args[args.length - 1]
+          assert.ok(path.isAbsolute(fileArgument), `unsafe editor arguments: ${JSON.stringify(args)}`)
+          assert.ok(
+            fileArgument.startsWith(path.resolve(fileName)),
+            `unexpected editor arguments: ${JSON.stringify(args)}`
+          )
+        })
+      }
+    }
+  }
+})
+
+describe('launchEditor WSL handling', () => {
+  if (process.platform !== 'linux') {
+    return
+  }
+
+  test('uses a relative path for files on a Windows drive in WSL', (t) => {
+    t.mock.method(process, 'cwd', () => '/home/user/project')
+    t.mock.method(os, 'release', () => '4.4.0-43-Microsoft')
+    t.mock.method(fs, 'existsSync', () => true)
+    const spawn = t.mock.method(childProcess, 'spawn', () => fakeEditorProcess)
+
+    launchEditor('/mnt/c/project/file.js', 'vim')
+
+    assert.equal(spawn.mock.callCount(), 1)
+    assert.deepEqual(spawn.mock.calls[0].arguments[1], ['./../../../mnt/c/project/file.js'])
+  })
+
+  test('resolves a relative path before converting it for WSL', (t) => {
+    t.mock.method(process, 'cwd', () => '/mnt/c/project')
+    t.mock.method(os, 'release', () => '4.4.0-43-Microsoft')
+    t.mock.method(fs, 'existsSync', () => true)
+    const spawn = t.mock.method(childProcess, 'spawn', () => fakeEditorProcess)
+
+    launchEditor('file.js', 'vim')
+
+    assert.equal(spawn.mock.callCount(), 1)
+    assert.deepEqual(spawn.mock.calls[0].arguments[1], ['./file.js'])
+  })
+
+  test('prefixes an option-like relative path on a Windows drive in WSL', (t) => {
+    t.mock.method(process, 'cwd', () => '/mnt/c/project')
+    t.mock.method(os, 'release', () => '4.4.0-43-Microsoft')
+    t.mock.method(fs, 'existsSync', () => true)
+    const spawn = t.mock.method(childProcess, 'spawn', () => fakeEditorProcess)
+
+    launchEditor('+call system("touch LAUNCH_EDITOR_MARKER")', 'vim')
+
+    assert.equal(spawn.mock.callCount(), 1)
+    assert.deepEqual(spawn.mock.calls[0].arguments[1], [
+      './+call system("touch LAUNCH_EDITOR_MARKER")'
+    ])
+  })
+
+  test('prefixes an option-like relative path with a position in WSL', (t) => {
+    t.mock.method(process, 'cwd', () => '/mnt/c/project')
+    t.mock.method(os, 'release', () => '4.4.0-43-Microsoft')
+    t.mock.method(fs, 'existsSync', () => true)
+    const spawn = t.mock.method(childProcess, 'spawn', () => fakeEditorProcess)
+
+    launchEditor('-ccall system("touch LAUNCH_EDITOR_MARKER"):10:5', 'vim')
+
+    assert.equal(spawn.mock.callCount(), 1)
+    assert.deepEqual(spawn.mock.calls[0].arguments[1], [
+      '+call cursor(10, 5)',
+      './-ccall system("touch LAUNCH_EDITOR_MARKER")'
+    ])
+  })
 })
