@@ -86,3 +86,42 @@ describe('launchEditor UNC path guard', () => {
     })
   }
 })
+
+describe('launchEditor CMD argument guard', () => {
+  if (process.platform === 'win32') {
+    for (const [name, lineBreak] of [
+      ['carriage returns', '\r'],
+      ['line feeds', '\n']
+    ]) {
+      test(`rejects ${name} in arguments`, (t) => {
+        t.mock.method(fs, 'existsSync', () => true)
+        const onError = mock.fn()
+
+        launchEditor(`C:\\project\\file.js${lineBreak}calc.exe`, 'code', onError)
+
+        assert.equal(onError.mock.callCount(), 1)
+        assert.match(onError.mock.calls[0].arguments[1], /argument containing a line break/)
+      })
+    }
+
+    test('rejects percent signs in arguments', (t) => {
+      t.mock.method(fs, 'existsSync', () => true)
+      const onError = mock.fn()
+
+      launchEditor('C:\\project\\100%\\file.js', 'code', onError)
+
+      assert.equal(onError.mock.callCount(), 1)
+      assert.match(onError.mock.calls[0].arguments[1], /argument containing "%"/)
+    })
+
+    test('rejects CMD variable modifiers', (t) => {
+      t.mock.method(fs, 'existsSync', () => true)
+      const onError = mock.fn()
+
+      launchEditor('C:\\project\\%VAR:old=new%', 'code', onError)
+
+      assert.equal(onError.mock.callCount(), 1)
+      assert.match(onError.mock.calls[0].arguments[1], /argument containing "%"/)
+    })
+  }
+})

@@ -117,6 +117,22 @@ function launchEditor (file, specifiedEditor, onErrorCallback) {
     args.push(fileName)
   }
 
+  if (process.platform === 'win32') {
+    // CMD treats line breaks as command separators. They cannot appear in regular Windows
+    // file names, but NTFS alternate data stream names may contain control characters.
+    if (args.some((arg) => /[\r\n]/.test(arg))) {
+      onErrorCallback(fileName, 'Cannot launch an editor with an argument containing a line break')
+      return
+    }
+
+    // CMD expands expressions such as `%VAR:old=new%` before consuming caret escapes, so
+    // percent signs in arguments cannot be preserved safely and are rejected.
+    if (args.some((arg) => arg.includes('%'))) {
+      onErrorCallback(fileName, 'Cannot launch an editor with an argument containing "%"')
+      return
+    }
+  }
+
   if (_childProcess && isTerminalEditor(editor)) {
     // There's an existing editor process already and it's attached
     // to the terminal, so go kill it. Otherwise two separate editor
@@ -146,7 +162,9 @@ function launchEditor (file, specifiedEditor, onErrorCallback) {
 
     // According to https://ss64.com/nt/syntax-esc.html,
     // we can use `^` to escape `&`, `<`, `>`, `|`, `%`, and `^`
-    // I'm not sure if we have to escape all of these, but let's do it anyway
+    //
+    // `"` cannot appear in Windows paths, so it is outside the untrusted path input
+    // this sanitization protects.
     function escapeCmdArgs (cmdArgs) {
       return cmdArgs.replace(/([&|<>,;=^])/g, '^$1')
     }
